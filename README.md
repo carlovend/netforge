@@ -14,7 +14,7 @@ Netforge is my collection of small C programs created to explore fundamental net
 
 This repository contains a growing collection of command-line tools focused on two main areas:
 
-* **Simple Chat System:** Components to build a basic multi-client chat application. This includes a `pollserver` capable of handling concurrent connections and a corresponding `client`.
+* **Simple System:** Components to build a basic multi-client application. This includes a `pollserver` capable of handling concurrent connections and a corresponding `client`.
 * **Network Diagnostic Utilities:** Tools for analyzing and scanning networks. The main example is `scanner`, an efficient TCP port scanner that uses non-blocking sockets to check multiple ports in parallel.
 
 
