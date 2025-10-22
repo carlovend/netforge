@@ -125,23 +125,23 @@ int main(int argc, char **argv) {
     printf("Ricevuti %d byte.\n", n);
 
 
-    // --- 8. Analisi della Risposta ---
+    // --- Analisi della Risposta ---
     
-    // 1. Il buffer di ricezione inizia con un header IP.
+    //  Il buffer di ricezione inizia con un header IP.
     struct ip *ip_reply = (struct ip *)recv_buffer;
     
-    // 2. La lunghezza dell'header IP è variabile!
+    //  La lunghezza dell'header IP è variabile!
     //    Il campo 'ip_hl' (header length) è in parole da 4 byte.
     int ip_header_len = ip_reply->ip_hl * 4;
 
-    // 3. L'header ICMP si trova SUBITO DOPO l'header IP.
+    // L'header ICMP si trova SUBITO DOPO l'header IP.
     struct icmp *icmp_reply = (struct icmp *)(recv_buffer + ip_header_len);
 
-    // 4. Controlliamo se è una risposta al nostro ping
+    //  Controlliamo se è una risposta al nostro ping
     if (icmp_reply->icmp_type == ICMP_ECHOREPLY) { // 0 = Echo Reply
         if (ntohs(icmp_reply->icmp_hun.ih_idseq.icd_id) == getpid()) {
             
-            // È la nostra risposta! Calcoliamo l'RTT.
+            //Calcoliamo l'RTT.
             struct timeval *tv_sent = (struct timeval *)(recv_buffer + ip_header_len + sizeof(struct icmp));
             struct timeval tv_now;
             gettimeofday(&tv_now, NULL);
@@ -161,7 +161,7 @@ int main(int argc, char **argv) {
                icmp_reply->icmp_type);
     }
     
-    // --- 9. Pulizia ---
+    
     close(s);
     freeaddrinfo(res);
     return 0;
