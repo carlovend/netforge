@@ -7,7 +7,9 @@
 #include <pcap/pcap.h>
 #include <arpa/inet.h> 
 #include <netinet/tcp.h>
-
+#include <netinet/udp.h>    
+#include <time.h>          
+#include <signal.h>         
 
 // questa serve a gestire una sola connessione
 struct tcp_connection {
@@ -16,12 +18,11 @@ struct tcp_connection {
     uint16_t port_src;
     uint16_t port_dst;
     
-    // "e altro?"
     long packet_count;
     long byte_count;
     time_t start_time;
     
-    // Per creare la lista
+    // per creare la lista
     struct tcp_connection *next;
 };
 
@@ -39,10 +40,49 @@ struct global_state {
 
 
 
+// variabile globale per l'handle pcap
+static pcap_t *t_handle_global;
+
+void stop_capture(int signum) {
+    (void)signum; // silenzia il warning
+    printf("\nInterruzione... (Premi di nuovo Ctrl+C per forzare)\n");
+    if (t_handle_global) {
+        pcap_breakloop(t_handle_global);
+    }
+}
+
+
+
+// funzione helper per trovare una connessione 
+struct tcp_connection* find_connection(struct global_state *state, struct ip *ip_h, struct tcphdr *tcp_h) {
+    struct tcp_connection *conn = state->connection_list_head;
+    uint16_t src_port = ntohs(tcp_h->th_sport);
+    uint16_t dst_port = ntohs(tcp_h->th_dport);
+
+    while (conn != NULL) {
+        // controlla in entrambe le direzioni
+        if (conn->ip_src.s_addr == ip_h->ip_src.s_addr && 
+            conn->ip_dst.s_addr == ip_h->ip_dst.s_addr &&
+            conn->port_src == src_port &&
+            conn->port_dst == dst_port) {
+            return conn;
+        }
+        if (conn->ip_src.s_addr == ip_h->ip_dst.s_addr && 
+            conn->ip_dst.s_addr == ip_h->ip_src.s_addr &&
+            conn->port_src == dst_port &&
+            conn->port_dst == src_port) {
+            return conn;
+        }
+        conn = conn->next;
+    }
+    return NULL; 
+}
+
 
 //funzione di callback
 void print_packet_info(u_char *user, const struct pcap_pkthdr *pkthdr, 
                        const u_char *packet) {
+    
     
     struct global_state *state = (struct global_state *)user;
 
@@ -51,85 +91,93 @@ void print_packet_info(u_char *user, const struct pcap_pkthdr *pkthdr,
     struct ether_header *eth_header;
     eth_header = (struct ether_header *) packet;
     
-    if (ntohs(eth_header->ether_type) != ETHERTYPE_IP) {
-        printf("Pacchetto non-IP ricevuto (probabilmente ARP o IPv6). Skipping...\n");
-        return;
-    }
 
-    printf("Pacchetto IP (IPv4) ricevuto!\n");
 
     const int ethernet_header_length = 14;
-
     
     struct ip *ip_h = (struct ip *)(packet + ethernet_header_length);
     int ip_header_length = ip_h->ip_hl * 4;
 
-    printf("  IP Header Length: %d byte\n", ip_header_length);
-
-    //  Creiamo un buffer locale per la sorgente
-    char src_ip_buffer[INET_ADDRSTRLEN];
-    
-    // Convertiamo l'IP sorgente e lo copiamo nel nostro buffer
-    strcpy(src_ip_buffer, inet_ntoa(ip_h->ip_src));
-    
-    // Ora possiamo convertire la destinazione 
-    char *dst_ip_str = inet_ntoa(ip_h->ip_dst);
-
-    printf("  Sorgente: %s\n", src_ip_buffer);
-    printf("  Destinazione: %s\n", dst_ip_str);
-    
+    // printf("  IP Header Length: %d byte\n", ip_header_length); 
 
 
     // --- PARSING TCP ---
-    if (ip_h->ip_p != IPPROTO_TCP) {
-        printf("  Protocollo: Non-TCP. Skipping...\n");
-        return;
-    }
-    
-    printf("  Protocollo: TCP\n");
-    
-    // Trova l'inizio dell'header TCP
-    struct tcphdr *tcp_h = (struct tcphdr *)(packet + ethernet_header_length + ip_header_length);
-    
-    // Leggi le porte
-    int src_port = ntohs(tcp_h->th_sport);
-    int dst_port = ntohs(tcp_h->th_dport);
+    if (ip_h->ip_p == IPPROTO_TCP) {
+        printf("  Protocollo: TCP\n");
+        struct tcphdr *tcp_h = (struct tcphdr *)(packet + ethernet_header_length + ip_header_length);
+        int tcp_header_length = tcp_h->th_off * 4;
+        int payload_length = pkthdr->len - (ethernet_header_length + ip_header_length + tcp_header_length);
+        
+        int src_port = ntohs(tcp_h->th_sport);
+        int dst_port = ntohs(tcp_h->th_dport);
 
-    printf("  Porta Sorgente: %d\n", src_port);
-    printf("  Porta Destinazione: %d\n", dst_port);
+        printf("  Porte: %d -> %d\n", src_port, dst_port);
 
-    // Analizza i Flag!
-    printf("  Flags:\n");
-    if (tcp_h->th_flags & TH_SYN) printf("    [SYN] (Inizio connessione)\n");
-    if (tcp_h->th_flags & TH_ACK) printf("    [ACK] (Conferma)\n");
-    if (tcp_h->th_flags & TH_FIN) printf("    [FIN] (Chiusura connessione)\n");
-    if (tcp_h->th_flags & TH_RST) printf("    [RST] (Reset connessione)\n");
-    if (tcp_h->th_flags & TH_PUSH) printf("    [PSH] (Push dati)\n");
-    
-    // Analizza il Payload (i dati veri e propri)
-    int tcp_header_length = tcp_h->th_off * 4;
-    int payload_length = pkthdr->len - (ethernet_header_length + ip_header_length + tcp_header_length);
-    
-    if (payload_length > 0) {
-        printf("  Payload (%d byte):\n", payload_length);
         
-        const u_char *payload = (packet + ethernet_header_length + ip_header_length + tcp_header_length);
-        
-        
-        int len_to_print = (payload_length < 50) ? payload_length : 50;
-        
-        for(int i = 0; i < len_to_print; i++) {
-            if (isprint(payload[i])) {
-                printf("%c", payload[i]);
-            } else {
-                printf("."); // un . per i byte non stampabili
-            }
+        if (src_port == 80 || dst_port == 80) {
+            state->http_requests++;
+            printf("    [!] Pacchetto HTTP rilevato!\n");
         }
-        printf("\n");
+        
+        struct tcp_connection *conn = find_connection(state, ip_h, tcp_h);
+
+        
+        if (tcp_h->th_flags & TH_SYN) {
+            if (conn == NULL) { // solo se è una NUOVA connessione
+                printf("    [+] Nuova connessione TCP tracciata.\n");
+                // alloca memoria per la nuova connessione
+                struct tcp_connection *new_conn = (struct tcp_connection*)malloc(sizeof(struct tcp_connection));
+                if (new_conn == NULL) {
+                    fprintf(stderr, "Errore: malloc fallita!\n");
+                    return;
+                }
+                
+               
+                new_conn->ip_src = ip_h->ip_src; 
+                new_conn->ip_dst = ip_h->ip_dst;
+                new_conn->port_src = src_port;
+                new_conn->port_dst = dst_port;
+                new_conn->packet_count = 1;
+                new_conn->byte_count = pkthdr->len;
+                new_conn->start_time = time(NULL);
+
+                //  si aggiunge in testa alla lista
+                new_conn->next = state->connection_list_head;
+                state->connection_list_head = new_conn;
+                state->active_tcp_connections++;
+            }
+        } else if (tcp_h->th_flags & (TH_FIN | TH_RST)) {
+             if (conn != NULL) {
+                printf("    [-] Connessione TCP chiusa.\n");
+                
+                state->active_tcp_connections--; // semplice decremento
+             }
+        } else if (conn != NULL) {
+            // aggiorna una connessione esistente
+            conn->packet_count++;
+            conn->byte_count += pkthdr->len;
+        }
+
+        if (payload_length > 0 && (src_port == 80 || dst_port == 80)) {
+            printf("  Payload HTTP (%d byte):\n", payload_length);
+            
+        }
+    }
+    //udp
+    else if (ip_h->ip_p == IPPROTO_UDP) {
+        printf("  Protocollo: UDP\n");
+        struct udphdr *udp_h = (struct udphdr *)(packet + ethernet_header_length + ip_header_length);
+        int src_port = ntohs(udp_h->uh_sport);
+        int dst_port = ntohs(udp_h->uh_dport);
+        
+        printf("  Porte: %d -> %d\n", src_port, dst_port);
+        
+        if (src_port == 53 || dst_port == 53) {
+            state->dns_queries++;
+            printf("    [!] Pacchetto DNS rilevato!\n");
+        }
     }
 }
-
-
 
 
 
@@ -140,11 +188,14 @@ int main(void) {
     char errbuf[PCAP_ERRBUF_SIZE];
     struct bpf_program fp;
     struct global_state my_sniffer_state;
+    
+    
     my_sniffer_state.connection_list_head = NULL;
     my_sniffer_state.active_tcp_connections = 0;
     my_sniffer_state.dns_queries = 0;
     my_sniffer_state.http_requests = 0;
-    char filter_exp[] = "(tcp and port 80) or (udp and port 53)";
+    
+    char filter_exp[] = "(tcp and port 80) or (udp and port 53) or (tcp and port 443) ";
     printf("Device: %s\n", dev);
 
     pcap_t *t_handle;
@@ -155,6 +206,10 @@ int main(void) {
         printf("Err: pcap_open_live() %s\n", errbuf);
         exit(1);
     }
+    
+    
+    t_handle_global = t_handle;
+    signal(SIGINT, stop_capture); 
 
     if (pcap_compile(t_handle, &fp, filter_exp, 0, PCAP_NETMASK_UNKNOWN) == -1) {
         fprintf(stderr, "Errore pcap_compile: %s\n", pcap_geterr(t_handle));
@@ -171,11 +226,19 @@ int main(void) {
     int packet_to_sniff = -1; // Loop infinito
 
     if (pcap_loop(t_handle, packet_to_sniff, print_packet_info, (u_char*)&my_sniffer_state) == -1) {
-        fprintf(stderr, "ERR: pcap_loop() failed: %s\n", pcap_geterr(t_handle));
+        fprintf(stderr, "ERR: pcap_loop() failed!\n"); 
     }
 
-    printf("\nCattura terminata.\n");
+    printf("\n--- Cattura Terminata ---\n");
     
+    
+    printf("Riepilogo:\n");
+    printf("  Richieste HTTP (porta 80): %ld\n", my_sniffer_state.http_requests);
+    printf("  Query DNS (porta 53):    %ld\n", my_sniffer_state.dns_queries);
+    printf("  Connessioni TCP attive:  %d\n", my_sniffer_state.active_tcp_connections);
+    
+    // qui dovrei fare free su ogni connessione
+
     pcap_freecode(&fp);
     pcap_close(t_handle);
     
